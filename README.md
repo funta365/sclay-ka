@@ -43,6 +43,11 @@ Install PyInstaller in the same virtual environment.
 
 The portable build is written to `dist/Sclayka.exe`. To build the Windows installer, install Inno Setup 6 and run `.\build_installer.bat`. The installer version is set in `installer.iss`.
 
+## License
+
+Sclayka is licensed under the [GNU Affero General Public License, version 3](LICENSE).
+The [third-party notices](THIRD_PARTY_NOTICES.md) list the components shipped in the Windows installer, their licenses, and where to get the matching source code.
+
 ## Source layout
 
 | File | Role |

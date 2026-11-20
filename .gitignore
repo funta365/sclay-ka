@@ -1,0 +1,15 @@
+/.venv/
+/venv/
+__pycache__/
+*.py[cod]
+/build/
+/dist/
+/Sclayka.spec
+/pdf_merger_gui.py
+/config.json
+.env
+.env.*
+*.pdf
+*.part
+*.exe
+Thumbs.db
