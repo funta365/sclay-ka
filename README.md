@@ -12,7 +12,13 @@ Place the passport or ID near the top of the scanner bed. Sclayka crops the top 
 - Choose a quality preset to balance readability and file size. Grayscale is optional.
 - Track progress or cancel a batch while processing runs in a background thread.
 - Choose where the PDFs are saved. When a filename already exists, Sclayka adds a numbered suffix.
-- Process documents locally with a Russian-language interface and light and dark themes.
+- Process documents locally with an English or Russian interface and light and dark themes.
+
+Choose **English** or **Русский** the first time you open the app. To change it later, open the gear menu, select **Language**, and reopen Sclayka.
+
+## Windows download
+
+Packaged versions are listed on [GitHub Releases](https://github.com/funta365/sclay-ka/releases). The installer offers both English and Russian.
 
 ## Run from source
 
@@ -24,7 +30,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe sclayka.py
 ```
 
-Add your scans, choose an output folder, and click **Склеить**. Supported inputs include PDF, JPG, PNG, TIFF, and BMP. A file with an odd number of pages leaves the bottom half of its last output sheet blank.
+Add your scans, choose an output folder, and click **Merge** (**Склеить** in Russian). Supported inputs include PDF, JPG, PNG, TIFF, and BMP. A file with an odd number of pages leaves the bottom half of its last output sheet blank.
 
 ## Build for Windows
 

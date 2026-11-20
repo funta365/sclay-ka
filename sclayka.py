@@ -6,13 +6,13 @@ import sys
 import tempfile
 from itertools import count
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSettings, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QLocale, QPoint, QPointF, QRectF, QSettings, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QColor, QCursor, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
     QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
-    QAbstractButton, QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
+    QAbstractButton, QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox,
     QFileDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QHeaderView,
     QLabel, QMainWindow, QMessageBox, QPushButton, QRadioButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -20,8 +20,39 @@ from PySide6.QtWidgets import (
 
 import sclayka_core as core
 
-APP_NAME = "Склей-ка"
 IS_WIN = sys.platform == "win32"
+LANGUAGES = {"en": "English", "ru": "Русский"}
+LANGUAGE_KEY = "language"
+language = "ru"
+
+
+def text(ru: str, en: str) -> str:
+    return en if language == "en" else ru
+
+
+def app_name() -> str:
+    return text("Склей-ка", "Sclayka")
+
+
+def startup_language(settings: QSettings) -> str:
+    saved = settings.value(LANGUAGE_KEY, "", str)
+    if saved in LANGUAGES:
+        return saved
+
+    default = "ru" if QLocale.system().language() == QLocale.Language.Russian else "en"
+    dialog = QMessageBox()
+    dialog.setWindowTitle("Sclayka / Склей-ка")
+    dialog.setText("Choose a language / Выберите язык")
+    buttons = {}
+    for code, label in LANGUAGES.items():
+        buttons[code] = dialog.addButton(label, QMessageBox.ButtonRole.AcceptRole)
+    dialog.setDefaultButton(buttons[default])
+    dialog.setEscapeButton(dialog.addButton("Cancel / Отмена", QMessageBox.ButtonRole.RejectRole))
+    dialog.exec()
+    choice = next((code for code, button in buttons.items() if button == dialog.clickedButton()), None)
+    if choice is not None:
+        settings.setValue(LANGUAGE_KEY, choice)
+    return choice or default
 
 THEMES = {
     "light": dict(
@@ -140,16 +171,39 @@ ROLE_STATE = Qt.UserRole + 3  # pending / running / done / error
 
 def fmt_size(n: int) -> str:
     if n < 1024 * 1024:
-        return f"{max(n / 1024, 1):.0f} КБ"
-    return f"{n / 1024 / 1024:.1f} МБ".replace(".", ",")
+        return f"{max(n / 1024, 1):.0f} {text('КБ', 'KB')}"
+    value = f"{n / 1024 / 1024:.1f}"
+    return text(f"{value.replace('.', ',')} МБ", f"{value} MB")
 
 
-def plural(n: int, one: str, few: str, many: str) -> str:
+def plural(n: int, ru: tuple[str, str, str], en: tuple[str, str]) -> str:
+    if language == "en":
+        return f"{n} {en[0] if n == 1 else en[1]}"
+    one, few, many = ru
     if n % 10 == 1 and n % 100 != 11:
         return f"{n} {one}"
     if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
         return f"{n} {few}"
     return f"{n} {many}"
+
+
+FILE_WORDS = (("файл", "файла", "файлов"), ("file", "files"))
+PAGE_WORDS = (("страница", "страницы", "страниц"), ("page", "pages"))
+SHEET_WORDS = (("лист", "листа", "листов"), ("sheet", "sheets"))
+QUALITY_TEXT = (
+    ("Print", "300 dpi · best for printing"),
+    ("Standard", "200 dpi · smaller PDF"),
+    ("Compact", "150 dpi · smallest PDF"),
+)
+
+
+def error_text(error: Exception) -> str:
+    message = str(error) or error.__class__.__name__
+    translations = {
+        "Файл защищён паролем": "This file is password protected",
+        "В файле нет страниц": "This file has no pages",
+    }
+    return text(message, translations.get(message, message))
 
 
 def short_path(path: str) -> str:
@@ -330,7 +384,7 @@ class ThemeSwitch(QAbstractButton):
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(40, 22)
-        self.setToolTip("Тёмная тема")
+        self.setToolTip(text("Тёмная тема", "Dark theme"))
         self.colors = THEMES["light"]
 
     def paintEvent(self, _):
@@ -356,6 +410,7 @@ class ThemeSwitch(QAbstractButton):
 class SettingsPopup(QWidget):
     """Меню под шестерёнкой: качество и Ч/Б."""
     changed = Signal()
+    language_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
@@ -370,15 +425,16 @@ class SettingsPopup(QWidget):
         lay = QVBoxLayout(box)
         lay.setContentsMargins(18, 14, 18, 16)
         lay.setSpacing(10)
-        lay.addWidget(QLabel("Качество", objectName="cardTitle"))
+        lay.addWidget(QLabel(text("Качество", "Quality"), objectName="cardTitle"))
         self.quality = QButtonGroup(self)
         for i, q in enumerate(core.QUALITIES):
+            name, description = QUALITY_TEXT[i]
             row = QHBoxLayout()
-            rb = QRadioButton(q.name)
+            rb = QRadioButton(text(q.name, name))
             rb.setMinimumWidth(110)
             self.quality.addButton(rb, i)
             row.addWidget(rb)
-            row.addWidget(QLabel(q.hint, objectName="hint"))
+            row.addWidget(QLabel(text(q.hint, description), objectName="hint"))
             row.addStretch()
             lay.addLayout(row)
         self.quality.idClicked.connect(lambda _: self.changed.emit())
@@ -386,12 +442,27 @@ class SettingsPopup(QWidget):
         lay.addSpacing(2)
         lay.addWidget(QFrame(objectName="sep"))
         lay.addSpacing(2)
-        self.gray = QCheckBox("Чёрно-белые")
+        self.gray = QCheckBox(text("Чёрно-белые", "Grayscale"))
         self.gray.toggled.connect(lambda _: self.changed.emit())
         lay.addWidget(self.gray)
-        hint = QLabel("Файл меньше, печать без цветных разводов", objectName="hint")
+        hint = QLabel(text("Файл меньше, печать без цветных разводов", "Reduces file size and prints in grayscale"), objectName="hint")
         hint.setContentsMargins(26, 0, 0, 0)
         lay.addWidget(hint)
+
+        lay.addWidget(QFrame(objectName="sep"))
+        language_row = QHBoxLayout()
+        label = QLabel(text("Язык", "Language"))
+        self.language_choice = QComboBox()
+        label.setBuddy(self.language_choice)
+        for code, name in LANGUAGES.items():
+            self.language_choice.addItem(name, code)
+        self.language_choice.currentIndexChanged.connect(
+            lambda _: self.language_changed.emit(self.language_choice.currentData()))
+        language_row.addWidget(label)
+        language_row.addWidget(self.language_choice, 1)
+        lay.addLayout(language_row)
+        lay.addWidget(QLabel(text("Язык изменится при следующем запуске",
+                                  "Language changes the next time you open Sclayka"), objectName="hint"))
 
     def popup_under(self, anchor: QWidget):
         self.adjustSize()
@@ -419,7 +490,8 @@ class FileList(QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setHeaderLabels(["Файл", "Страниц", "Размер", "Результат"])
+        self.setHeaderLabels([text("Файл", "File"), text("Страниц", "Pages"),
+                              text("Размер", "Size"), text("Результат", "Result")])
         self.setRootIsDecorated(False)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setUniformRowHeights(True)
@@ -454,13 +526,13 @@ class FileList(QTreeWidget):
         p.setFont(f)
         p.setPen(QColor(c["text"]))
         p.drawText(QRectF(r.left(), cy - 8, r.width(), 26), Qt.AlignCenter,
-                   "Перетащите сюда PDF или сканы паспортов")
+                   text("Перетащите сюда PDF или сканы паспортов", "Drop PDFs or ID scans here"))
         f.setPointSizeF(9.5)
         f.setWeight(QFont.Normal)
         p.setFont(f)
         p.setPen(QColor(c["muted"]))
         p.drawText(QRectF(r.left(), cy + 20, r.width(), 22), Qt.AlignCenter,
-                   "или нажмите «Добавить файлы» · Ctrl+O")
+                   text("или нажмите «Добавить файлы» · Ctrl+O", "or click Add files · Ctrl+O"))
 
 
 class DropOverlay(QWidget):
@@ -494,14 +566,15 @@ class DropOverlay(QWidget):
         f.setWeight(QFont.DemiBold)
         p.setFont(f)
         p.setPen(QColor(c["text"]))
-        p.drawText(QRectF(r.left(), cy - 10, r.width(), 34), Qt.AlignCenter,
-                   "Подождите окончания склейки" if self.busy else "Отпустите, чтобы добавить")
+        message = (text("Подождите окончания склейки", "Wait for the batch to finish") if self.busy
+                   else text("Отпустите, чтобы добавить", "Release to add files"))
+        p.drawText(QRectF(r.left(), cy - 10, r.width(), 34), Qt.AlignCenter, message)
         f.setPointSizeF(10)
         f.setWeight(QFont.Normal)
         p.setFont(f)
         p.setPen(QColor(c["muted"]))
         p.drawText(QRectF(r.left(), cy + 28, r.width(), 24), Qt.AlignCenter,
-                   "PDF, JPG, PNG, TIFF или папку целиком")
+                   text("PDF, JPG, PNG, TIFF или папку целиком", "PDF, JPG, PNG, TIFF, or a folder"))
 
 
 class ProgressOverlay(QWidget):
@@ -538,10 +611,10 @@ class ProgressOverlay(QWidget):
         btns = QHBoxLayout()
         btns.setSpacing(8)
         btns.addStretch()
-        self.cancel_btn = QPushButton("Отменить")
+        self.cancel_btn = QPushButton(text("Отменить", "Cancel"))
         self.cancel_btn.clicked.connect(self.cancel_clicked)
-        self.open_btn = QPushButton("Открыть папку", objectName="secondary")
-        self.ok_btn = QPushButton("Готово", objectName="primary")
+        self.open_btn = QPushButton(text("Открыть папку", "Open folder"), objectName="secondary")
+        self.ok_btn = QPushButton(text("Готово", "Done"), objectName="primary")
         self.ok_btn.clicked.connect(self.dismiss)
         for b in (self.cancel_btn, self.open_btn, self.ok_btn):
             btns.addWidget(b)
@@ -557,8 +630,8 @@ class ProgressOverlay(QWidget):
         self._timer.stop()
         self.flower.set_progress(0, animate=False)
         self.flower.set_active(True)
-        self.title.setText("Склеиваю…")
-        self.detail.setText("Подготовка")
+        self.title.setText(text("Склеиваю…", "Merging…"))
+        self.detail.setText(text("Подготовка", "Preparing"))
         self.countdown.setText("")
         self.cancel_btn.show()
         self.cancel_btn.setEnabled(True)
@@ -574,7 +647,7 @@ class ProgressOverlay(QWidget):
 
     def stopping(self):
         self.cancel_btn.setEnabled(False)
-        self.detail.setText("Останавливаю…")
+        self.detail.setText(text("Останавливаю…", "Stopping…"))
 
     def finish(self, title: str, detail: str, success: bool, can_open: bool):
         self._finished = True
@@ -594,7 +667,8 @@ class ProgressOverlay(QWidget):
                 self._timer.start()
 
     def _show_countdown(self):
-        self.countdown.setText(f"Список очистится через {self._left} с")
+        self.countdown.setText(text(f"Список очистится через {self._left} с",
+                                    f"List clears in {self._left} s"))
 
     def _count(self):
         self._left -= 1
@@ -662,7 +736,7 @@ class Worker(QThread):
             except core.Cancelled:
                 return
             except Exception as e:  # noqa: BLE001 — показываем любую ошибку в строке файла
-                self.file_failed.emit(item_id, str(e) or e.__class__.__name__)
+                    self.file_failed.emit(item_id, error_text(e))
 
 
 def card() -> tuple[QFrame, QVBoxLayout]:
@@ -676,10 +750,11 @@ def card() -> tuple[QFrame, QVBoxLayout]:
 # ---------------------------------------------------------------- окно
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, settings: QSettings | None = None):
         super().__init__()
-        self.settings = QSettings("Koine-soft", "Sclay-ka")
-        self.setWindowTitle(f"{APP_NAME} — Койне-софт")
+        self.settings = settings if settings is not None else QSettings("Koine-soft", "Sclay-ka")
+        publisher = text("Койне-софт", "Koine-soft")
+        self.setWindowTitle(f"{app_name()} — {publisher}")
         self.setWindowIcon(QIcon(flower_pixmap(64)))
         self.resize(980, 640)
         self.setMinimumSize(720, 460)
@@ -717,9 +792,9 @@ class MainWindow(QMainWindow):
         logo.setPixmap(flower_pixmap(22))
         head.addWidget(logo)
         head.addSpacing(8)
-        head.addWidget(QLabel(APP_NAME, objectName="brand"))
+        head.addWidget(QLabel(app_name(), objectName="brand"))
         head.addSpacing(10)
-        head.addWidget(QLabel("Койне-софт", objectName="muted"))
+        head.addWidget(QLabel(publisher, objectName="muted"))
         head.addStretch()
         self.theme_switch = ThemeSwitch()
         self.theme_switch.toggled.connect(self.apply_theme)
@@ -727,7 +802,7 @@ class MainWindow(QMainWindow):
         head.addSpacing(12)
         self.settings_btn = QPushButton(objectName="chip")
         self.settings_btn.setCursor(Qt.PointingHandCursor)
-        self.settings_btn.setToolTip("Качество и цвет")
+        self.settings_btn.setToolTip(text("Настройки", "Settings"))
         self.settings_btn.clicked.connect(self.show_settings)
         head.addWidget(self.settings_btn)
         head.addSpacing(10 if self.frameless else 16)
@@ -749,6 +824,11 @@ class MainWindow(QMainWindow):
             min(int(self.settings.value("quality", 0)), len(core.QUALITIES) - 1)).setChecked(True)
         self.popup.gray.setChecked(self.settings.value("gray", False, bool))
         self.popup.changed.connect(self.on_settings_changed)
+        preferred = self.settings.value(LANGUAGE_KEY, language, str)
+        choice = self.popup.language_choice
+        choice.setCurrentIndex(choice.findData(preferred if preferred in LANGUAGES else language))
+        self.popup.language_changed.connect(
+            lambda code: self.settings.setValue(LANGUAGE_KEY, code))
 
         # ---- содержимое
         self.content = QWidget()
@@ -759,7 +839,7 @@ class MainWindow(QMainWindow):
 
         files_card, fl = card()
         title_row = QHBoxLayout()
-        title_row.addWidget(QLabel("Файлы", objectName="cardTitle"))
+        title_row.addWidget(QLabel(text("Файлы", "Files"), objectName="cardTitle"))
         title_row.addStretch()
         self.summary = QLabel("", objectName="muted")
         title_row.addWidget(self.summary)
@@ -771,12 +851,12 @@ class MainWindow(QMainWindow):
         fl.addWidget(self.list, 1)
 
         row = QHBoxLayout()
-        self.add_btn = QPushButton("+  Добавить файлы", objectName="dashed")
+        self.add_btn = QPushButton(text("+  Добавить файлы", "+  Add files"), objectName="dashed")
         self.add_btn.clicked.connect(self.pick_files)
         row.addWidget(self.add_btn)
         row.addSpacing(8)
-        row.addWidget(QLabel("Или перетащите файлы в окно · правый щелчок по файлу — убрать из списка",
-                             objectName="hint"))
+        row.addWidget(QLabel(text("Или перетащите файлы в окно · правый щелчок по файлу — убрать из списка",
+                                  "Drag files here · Right-click a file to remove it"), objectName="hint"))
         row.addStretch()
         fl.addLayout(row)
         body.addWidget(files_card, 1)
@@ -785,22 +865,22 @@ class MainWindow(QMainWindow):
         bottom = QHBoxLayout()
         bottom.setContentsMargins(6, 0, 0, 0)
         bottom.setSpacing(6)
-        self.clear_btn = QPushButton("Очистить", objectName="flat")
+        self.clear_btn = QPushButton(text("Очистить", "Clear"), objectName="flat")
         self.clear_btn.clicked.connect(self.clear_all)
         bottom.addWidget(self.clear_btn)
         self.folder_btn = QPushButton(objectName="flat")
-        self.folder_btn.setToolTip("Куда сохранять склеенные файлы")
+        self.folder_btn.setToolTip(text("Куда сохранять склеенные файлы", "Choose where to save merged files"))
         self.folder_btn.clicked.connect(self.pick_folder)
         bottom.addWidget(self.folder_btn)
-        self.open_folder_btn = QPushButton("Открыть", objectName="flat")
-        self.open_folder_btn.setToolTip("Открыть папку с результатами")
+        self.open_folder_btn = QPushButton(text("Открыть", "Open"), objectName="flat")
+        self.open_folder_btn.setToolTip(text("Открыть папку с результатами", "Open the output folder"))
         self.open_folder_btn.clicked.connect(self.open_save_folder)
         bottom.addWidget(self.open_folder_btn)
         bottom.addStretch()
         self.status = QLabel("", objectName="statusText")
         bottom.addWidget(self.status)
         bottom.addSpacing(12)
-        self.run_btn = QPushButton("Склеить   Ctrl+Enter", objectName="primary")
+        self.run_btn = QPushButton(objectName="primary")
         self.run_btn.clicked.connect(self.run_or_cancel)
         bottom.addWidget(self.run_btn)
         body.addLayout(bottom)
@@ -953,10 +1033,13 @@ class MainWindow(QMainWindow):
 
     def update_settings_chip(self):
         opts = self.current_options()
-        self.settings_btn.setText(f" {opts.quality.name}" + (" · Ч/Б" if opts.grayscale else ""))
+        index = self.popup.quality.checkedId()
+        name = text(opts.quality.name, QUALITY_TEXT[index][0])
+        self.settings_btn.setText(f" {name}" + (text(" · Ч/Б", " · Gray") if opts.grayscale else ""))
 
     def update_folder_label(self):
-        self.folder_btn.setText(f" Сохранять в: {short_path(self.save_folder)}")
+        folder = short_path(self.save_folder)
+        self.folder_btn.setText(text(f" Сохранять в: {folder}", f" Save to: {folder}"))
 
     def set_status(self, text: str):
         self.status.setText(text)
@@ -971,14 +1054,15 @@ class MainWindow(QMainWindow):
         pages = sum(int(i.text(COL_PAGES) or 0) for i in self.items.values())
         sheets = sum((int(i.text(COL_PAGES) or 0) + 1) // 2 for i in self.items.values())
         self.summary.setText(
-            f"{plural(n, 'файл', 'файла', 'файлов')} · {plural(pages, 'страница', 'страницы', 'страниц')}"
-            f" → {plural(sheets, 'лист', 'листа', 'листов')}" if n else "")
+            f"{plural(n, *FILE_WORDS)} · {plural(pages, *PAGE_WORDS)}"
+            f" → {plural(sheets, *SHEET_WORDS)}" if n else "")
 
     def update_buttons(self):
         busy = self.worker is not None
         pending = any(i.data(COL_NAME, ROLE_STATE) in ("pending", "error") for i in self.items.values())
         self.run_btn.setEnabled(busy or pending)
-        self.run_btn.setText("Отменить" if busy else "Склеить   Ctrl+Enter")
+        self.run_btn.setText(text("Отменить", "Cancel") if busy else
+                             text("Склеить   Ctrl+Enter", "Merge   Ctrl+Enter"))
         self.add_btn.setEnabled(not busy)
         self.clear_btn.setEnabled(not busy and bool(self.items))
         self.folder_btn.setEnabled(not busy)
@@ -990,8 +1074,10 @@ class MainWindow(QMainWindow):
             return
         start = self.settings.value("open_folder", os.path.expanduser("~"))
         exts = " ".join("*" + e for e in core.SUPPORTED_EXT)
-        files, _ = QFileDialog.getOpenFileNames(self, "Выберите файлы", start,
-                                                f"PDF и сканы ({exts});;Все файлы (*)")
+        filters = text(f"PDF и сканы ({exts});;Все файлы (*)",
+                       f"PDFs and scans ({exts});;All files (*)")
+        files, _ = QFileDialog.getOpenFileNames(self, text("Выберите файлы", "Choose files"),
+                                                start, filters)
         if files:
             self.settings.setValue("open_folder", os.path.dirname(files[0]))
             self.add_files(files)
@@ -1018,7 +1104,8 @@ class MainWindow(QMainWindow):
                 skipped += not core.is_supported(p)
                 continue
             known.add(os.path.normcase(p))
-            item = QTreeWidgetItem([os.path.basename(p), "", fmt_size(os.path.getsize(p)), "Ожидает"])
+            item = QTreeWidgetItem([os.path.basename(p), "", fmt_size(os.path.getsize(p)),
+                                    text("Ожидает", "Waiting")])
             item.setToolTip(COL_NAME, p)
             item_id = next(self.ids)
             item.setData(COL_NAME, ROLE_ID, item_id)
@@ -1028,12 +1115,14 @@ class MainWindow(QMainWindow):
                 item.setText(COL_PAGES, str(core.page_count(p)))
             except Exception as e:  # noqa: BLE001
                 item.setData(COL_NAME, ROLE_STATE, "error")
-                item.setText(COL_RESULT, f"Не открывается: {e}")
-                item.setToolTip(COL_RESULT, str(e))
+                message = error_text(e)
+                item.setText(COL_RESULT, text(f"Не открывается: {message}", f"Cannot open: {message}"))
+                item.setToolTip(COL_RESULT, message)
             self.paint_state(item)
             self.list.addTopLevelItem(item)
             self.items[item_id] = item
-        self.set_status(f"Пропущено неподходящих: {skipped}" if skipped else "")
+        self.set_status(text(f"Пропущено неподходящих: {skipped}",
+                             f"Unsupported files skipped: {skipped}") if skipped else "")
         self.update_summary()
         self.update_buttons()
 
@@ -1056,7 +1145,8 @@ class MainWindow(QMainWindow):
         self.update_buttons()
 
     def pick_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Папка для сохранения", self.save_folder)
+        folder = QFileDialog.getExistingDirectory(
+            self, text("Папка для сохранения", "Choose an output folder"), self.save_folder)
         if folder:
             self.save_folder = os.path.normpath(folder)
             self.settings.setValue("save_folder", self.save_folder)
@@ -1066,7 +1156,7 @@ class MainWindow(QMainWindow):
         try:
             os.startfile(self.save_folder)
         except OSError as e:
-            QMessageBox.warning(self, APP_NAME, str(e))
+            QMessageBox.warning(self, app_name(), error_text(e))
 
     def open_item(self, item: QTreeWidgetItem):
         out = item.data(COL_NAME, ROLE_OUT)
@@ -1074,7 +1164,7 @@ class MainWindow(QMainWindow):
         try:
             os.startfile(path)
         except OSError as e:
-            QMessageBox.warning(self, APP_NAME, str(e))
+            QMessageBox.warning(self, app_name(), error_text(e))
 
     # ---------- обработка ----------
     def run_or_cancel(self):
@@ -1091,14 +1181,16 @@ class MainWindow(QMainWindow):
         if not jobs:
             return
         if not os.path.isdir(self.save_folder):
-            QMessageBox.warning(self, APP_NAME, "Папка для сохранения не найдена. Выберите другую.")
+            QMessageBox.warning(self, app_name(), text(
+                "Папка для сохранения не найдена. Выберите другую.",
+                "The output folder could not be found. Choose another folder."))
             self.pick_folder()
             return
 
         for item_id, _ in jobs:
             item = self.items[item_id]
             item.setData(COL_NAME, ROLE_STATE, "pending")
-            item.setText(COL_RESULT, "В очереди")
+            item.setText(COL_RESULT, text("В очереди", "Queued"))
             item.setToolTip(COL_RESULT, "")
             self.paint_state(item)
         self.pages_total = max(sum(int(self.items[i].text(COL_PAGES)) for i, _ in jobs), 1)
@@ -1119,14 +1211,17 @@ class MainWindow(QMainWindow):
         item = self.items.get(item_id)
         if item:
             item.setData(COL_NAME, ROLE_STATE, "running")
-            item.setText(COL_RESULT, f"Страница {done} из {total}…")
+            item.setText(COL_RESULT, text(f"Страница {done} из {total}…",
+                                         f"Page {done} of {total}…"))
             self.paint_state(item)
         now = self.pages_base + done
         name = item.text(COL_NAME) if item else ""
         if len(name) > 34:
             name = name[:31] + "…"
-        self.progress_overlay.progress(now / self.pages_total,
-                                       f"{now} из {self.pages_total} стр. · {name}")
+        self.progress_overlay.progress(
+            now / self.pages_total,
+            text(f"{now} из {self.pages_total} стр. · {name}",
+                 f"{now} of {self.pages_total} pages · {name}"))
 
     def _file_finished(self, item):
         self.pages_base += int(item.text(COL_PAGES) or 0)
@@ -1149,7 +1244,7 @@ class MainWindow(QMainWindow):
     def on_file_failed(self, item_id, msg):
         item = self.items[item_id]
         item.setData(COL_NAME, ROLE_STATE, "error")
-        item.setText(COL_RESULT, f"Ошибка: {msg}")
+        item.setText(COL_RESULT, text(f"Ошибка: {msg}", f"Error: {msg}"))
         item.setToolTip(COL_RESULT, msg)
         self.paint_state(item)
         self.run_stats["errors"] += 1
@@ -1162,16 +1257,17 @@ class MainWindow(QMainWindow):
         for item in self.items.values():
             if item.data(COL_NAME, ROLE_STATE) in ("pending", "running"):
                 item.setData(COL_NAME, ROLE_STATE, "pending")
-                item.setText(COL_RESULT, "Ожидает")
+                item.setText(COL_RESULT, text("Ожидает", "Waiting"))
                 self.paint_state(item)
         self.update_buttons()
 
         st = self.run_stats
-        files = plural(st["done"], "файл", "файла", "файлов")
+        files = plural(st["done"], *FILE_WORDS)
         if cancelled:
             self.progress_overlay.hide()
             self.on_results_closed()
-            self.set_status(f"Остановлено · сохранено {files}" if st["done"] else "Остановлено")
+            self.set_status(text(f"Остановлено · сохранено {files}", f"Stopped · Saved {files}")
+                            if st["done"] else text("Остановлено", "Stopped"))
             return
         detail = files
         if st["src"]:
@@ -1179,20 +1275,23 @@ class MainWindow(QMainWindow):
             detail += f" · {fmt_size(st['src'])} → {fmt_size(st['out'])}"
             if saved > 0:
                 detail += f" (−{saved:.0f}%)"
-        detail += f"\nв папке {os.path.basename(self.save_folder) or self.save_folder}"
+        folder = os.path.basename(self.save_folder) or self.save_folder
+        detail += text(f"\nв папке {folder}", f"\nin {folder}")
         if st["errors"]:
-            detail += (f"\nНе получилось: {st['errors']} — "
-                       "причина видна в списке")
-            self.progress_overlay.finish("Готово, но не всё", detail, False, st["done"] > 0)
+            detail += text(f"\nНе получилось: {st['errors']} — причина видна в списке",
+                           f"\nFailed: {st['errors']}. See the file list for details.")
+            self.progress_overlay.finish(text("Готово, но не всё", "Finished with errors"),
+                                         detail, False, st["done"] > 0)
         else:
-            self.progress_overlay.finish("Готово!", detail, True, True)
+            self.progress_overlay.finish(text("Готово!", "Done!"), detail, True, True)
 
     def on_results_closed(self):
         """Итоги посмотрели — убираем из списка всё, что склеилось."""
         done = [i for i in self.items.values() if i.data(COL_NAME, ROLE_STATE) == "done"]
         self.remove_items(done)
         if done:
-            self.set_status(f"Последняя склейка: {plural(len(done), 'файл', 'файла', 'файлов')}")
+            files = plural(len(done), *FILE_WORDS)
+            self.set_status(text(f"Последняя склейка: {files}", f"Last batch: {files}"))
 
     def closeEvent(self, e):
         if self.worker:
@@ -1202,6 +1301,7 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    global language
     if IS_WIN:
         try:  # своя иконка в панели задач, а не python.exe
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("KoineSoft.Sclayka")
@@ -1209,7 +1309,9 @@ def main():
             pass
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    win = MainWindow()
+    settings = QSettings("Koine-soft", "Sclay-ka")
+    language = startup_language(settings)
+    win = MainWindow(settings)
     win.show()
     # Файлы, перетащенные на ярлык/exe
     args = [a for a in sys.argv[1:] if os.path.exists(a)]
